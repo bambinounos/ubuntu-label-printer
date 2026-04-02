@@ -1,8 +1,8 @@
-# Label Printer HT300
+# Label Printer — TSPL Thermal Label Printer
 
-Aplicación Ubuntu para diseñar e imprimir etiquetas en impresoras térmicas **HPRT HT300** usando comandos **TSPL**.
+Aplicación Ubuntu para diseñar e imprimir etiquetas en cualquier impresora térmica compatible con **TSPL** (TSC Printer Language).
 
-Incluye dos interfaces: **aplicación de escritorio GTK** y **interfaz web**.
+Funciona con impresoras HPRT, TSC, Xprinter, Gainscha, iDPRT y cualquier modelo que soporte comandos TSPL. Incluye dos interfaces: **aplicación de escritorio GTK** y **interfaz web**.
 
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%2B-E95420?logo=ubuntu&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)
@@ -22,6 +22,25 @@ Incluye dos interfaces: **aplicación de escritorio GTK** y **interfaz web**.
 - **3 modos de conexión**: CUPS, Red TCP (socket:9100), USB directo
 - **Interfaz web** alternativa (puerto 5080)
 - **Instalador profesional** con integración al menú de Ubuntu y GNOME Software
+
+---
+
+## Impresoras compatibles
+
+Esta aplicación funciona con **cualquier impresora térmica que soporte el lenguaje TSPL** (TSC Printer Language). A continuación se listan marcas y modelos verificados o conocidos como compatibles:
+
+| Marca | Modelos | Notas |
+|-------|---------|-------|
+| **HPRT** | HT300, HT100, HT130 | HT300 es el modelo principal de pruebas |
+| **TSC** | Todos los modelos (TDP-225, TE200, TE300, TC200, etc.) | TSC es el creador original del lenguaje TSPL |
+| **Xprinter** | XP-360B, XP-365B y otros modelos TSPL | Muy comunes y económicas |
+| **Gainscha / Gprinter** | Series GP y GS con soporte TSPL | Verificar modo TSPL en configuración |
+| **iDPRT** | Modelos con modo TSPL | Algunos modelos soportan múltiples lenguajes |
+| **Genérica** | Cualquier impresora térmica TSPL | Verificar especificaciones del fabricante |
+
+> **Nota:** Si tu impresora soporta múltiples lenguajes (TSPL, EPL, ZPL, CPCL), asegúrate de configurarla en **modo TSPL** antes de usar esta aplicación.
+
+> **Soporte ZPL (Zebra):** Está planificado agregar soporte para el lenguaje ZPL (Zebra Programming Language) en una versión futura.
 
 ---
 
@@ -155,7 +174,7 @@ Abre el navegador en **http://localhost:5080**.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  HT300  Etiquetas TSPL      ● CUPS  ● USB      │
+│  Label Printer  TSPL        ● CUPS  ● USB      │
 ├───────────────┬─────────────────────────────────┤
 │               │                                 │
 │  Plantillas   │  Editor TSPL                    │
@@ -175,7 +194,7 @@ Abre el navegador en **http://localhost:5080**.
 └───────────────┴─────────────────────────────────┘
 ```
 
-La interfaz web envía TSPL directamente via CUPS (`lp -d HT300 -o raw`).
+La interfaz web envía TSPL directamente via CUPS (ej: `lp -d HT300 -o raw`, donde `HT300` es el nombre de la cola CUPS configurada).
 
 ---
 
@@ -183,7 +202,7 @@ La interfaz web envía TSPL directamente via CUPS (`lp -d HT300 -o raw`).
 
 Todas las coordenadas están en **dots** (203 DPI → **8 dots = 1 mm**).
 
-Etiqueta estándar HT300: **60 x 40 mm** = **480 x 320 dots**.
+Etiqueta estándar: **60 x 40 mm** = **480 x 320 dots** (ejemplo con HT300).
 
 ### Comandos de configuración
 
@@ -239,16 +258,24 @@ PRINT 1
 
 ---
 
-## Configurar impresora HT300 en CUPS
+## Configurar impresora TSPL en CUPS
+
+Los ejemplos usan `HT300` como nombre de cola, pero puedes usar cualquier nombre que identifique tu impresora (ej: `XP360B`, `TSC_TE200`, `MiImpresora`).
 
 ### Por USB
 
 ```bash
 # Conectar impresora y verificar detección
-lsusb | grep 0483:5743
+lsusb | grep -i "printer"   # buscar tu impresora en la lista
 
-# Crear cola raw
+# Crear cola raw (ejemplo con HPRT HT300)
 sudo lpadmin -p HT300 -v "usb://HPRT/HT300" -m raw -E
+
+# Ejemplo con Xprinter XP-360B
+# sudo lpadmin -p XP360B -v "usb://Xprinter/XP-360B" -m raw -E
+
+# Ejemplo con TSC TE200
+# sudo lpadmin -p TSC_TE200 -v "usb://TSC/TE200" -m raw -E
 
 # Verificar
 lpstat -p HT300
@@ -260,12 +287,14 @@ lpstat -p HT300
 # Verificar conectividad
 nc -zv IP_IMPRESORA 9100
 
-# Crear cola
+# Crear cola (cambiar nombre y URI según tu impresora)
 sudo lpadmin -p HT300 -v "socket://IP_IMPRESORA:9100" -m raw -E
 
 # Verificar
 lpstat -v HT300
 ```
+
+> **Importante:** La cola CUPS debe crearse como **raw** (`-m raw`) para que los comandos TSPL se envíen sin procesar. Esto aplica a todas las impresoras TSPL.
 
 ### Permisos USB (si usas modo USB directo)
 
