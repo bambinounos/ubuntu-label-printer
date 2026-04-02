@@ -1,8 +1,12 @@
-"""Elementos que componen una etiqueta TSPL (texto, barcode, QR, líneas, cajas, círculos).
+"""Elementos que componen una etiqueta (texto, barcode, QR, líneas, cajas, círculos).
 
-Referencia HT300: 203 DPI, 1mm = 8 dots.
+Soporta generación TSPL y ZPL desde los mismos elementos.
+Referencia: 203 DPI, 1mm = 8 dots.
 Todas las coordenadas y dimensiones están en dots.
 """
+
+# Mapeo de rotación para ZPL: grados -> caracter ZPL
+_ZPL_ROT = {0: "N", 90: "R", 180: "I", 270: "B"}
 
 
 class LabelElement:
@@ -14,6 +18,9 @@ class LabelElement:
         self.selected = False
 
     def to_tspl(self):
+        raise NotImplementedError
+
+    def to_zpl(self):
         raise NotImplementedError
 
     def get_bounds(self):
@@ -54,6 +61,15 @@ class TextElement(LabelElement):
         rot = {0: 0, 90: 90, 180: 180, 270: 270}.get(self.rotation, 0)
         return f'TEXT {self.x},{self.y},"{self.font}",{rot},{self.mx},{self.my},"{self.text}"'
 
+    def to_zpl(self):
+        if not self.text:
+            return ""
+        cw, ch = self.FONTS.get(self.font, (16, 24))
+        font_h = ch * self.my
+        font_w = cw * self.mx
+        rot = _ZPL_ROT.get(self.rotation, "N")
+        return f"^FO{self.x},{self.y}^A0{rot},{font_h},{font_w}^FD{self.text}^FS"
+
     def get_bounds(self):
         cw, ch = self.FONTS.get(self.font, (16, 24))
         w = len(self.text) * cw * self.mx
@@ -84,6 +100,12 @@ class BarcodeElement(LabelElement):
         self.narrow = narrow
         self.wide = wide
 
+    # Mapeo de tipo TSPL a comando ZPL
+    _ZPL_TYPE_MAP = {
+        "128": "BC", "128M": "BC", "39": "B3", "39C": "B3",
+        "93": "BA", "EAN13": "BE", "EAN8": "B8", "UPCA": "BU", "UPCE": "B9",
+    }
+
     def to_tspl(self):
         if not self.data:
             return ""
@@ -91,6 +113,18 @@ class BarcodeElement(LabelElement):
         return (f'BARCODE {self.x},{self.y},"{self.barcode_type}",'
                 f'{self.height},{self.human_readable},{rot},'
                 f'{self.narrow},{self.wide},"{self.data}"')
+
+    def to_zpl(self):
+        if not self.data:
+            return ""
+        zpl_type = self._ZPL_TYPE_MAP.get(self.barcode_type, "BC")
+        rot = _ZPL_ROT.get(self.rotation, "N")
+        hr = "Y" if self.human_readable else "N"
+        lines = []
+        if self.narrow != 2:
+            lines.append(f"^BY{self.narrow}")
+        lines.append(f"^FO{self.x},{self.y}^{zpl_type}{rot},{self.height},{hr},N,N^FD{self.data}^FS")
+        return "\n".join(lines)
 
     def get_bounds(self):
         w = len(self.data) * (self.narrow + self.wide) * 4
@@ -124,6 +158,11 @@ class QRElement(LabelElement):
         rot = {0: 0, 90: 90, 180: 180, 270: 270}.get(self.rotation, 0)
         return f'QRCODE {self.x},{self.y},{self.ecc},{self.cell_size},{self.mode},{rot},"{self.data}"'
 
+    def to_zpl(self):
+        if not self.data:
+            return ""
+        return f"^FO{self.x},{self.y}^BQN,2,{self.cell_size}^FDMA,{self.data}^FS"
+
     def get_bounds(self):
         # QR v1 = 21 módulos, cada módulo = cell_size dots
         size = 21 * self.cell_size + 2 * self.cell_size
@@ -143,6 +182,9 @@ class LineElement(LabelElement):
 
     def to_tspl(self):
         return f"BAR {self.x},{self.y},{self.width},{self.height}"
+
+    def to_zpl(self):
+        return f"^FO{self.x},{self.y}^GB{self.width},{self.height},{self.height}^FS"
 
     def get_bounds(self):
         return (self.x, self.y, self.width, self.height)
@@ -164,6 +206,11 @@ class BoxElement(LabelElement):
     def to_tspl(self):
         return f"BOX {self.x},{self.y},{self.x2},{self.y2},{self.thickness}"
 
+    def to_zpl(self):
+        w = self.x2 - self.x
+        h = self.y2 - self.y
+        return f"^FO{self.x},{self.y}^GB{w},{h},{self.thickness}^FS"
+
     def get_bounds(self):
         return (self.x, self.y, self.x2 - self.x, self.y2 - self.y)
 
@@ -181,6 +228,9 @@ class CircleElement(LabelElement):
 
     def to_tspl(self):
         return f"CIRCLE {self.x},{self.y},{self.diameter},{self.thickness}"
+
+    def to_zpl(self):
+        return f"^FO{self.x},{self.y}^GC{self.diameter},{self.thickness},B^FS"
 
     def get_bounds(self):
         return (self.x, self.y, self.diameter, self.diameter)

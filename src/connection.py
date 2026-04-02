@@ -43,8 +43,13 @@ def save_config(config):
         json.dump(config, f, indent=2)
 
 
+def send_raw(content, config=None):
+    """Envía contenido raw (TSPL o ZPL) según el modo configurado."""
+    return send_tspl(content, config)
+
+
 def send_tspl(tspl_content, config=None):
-    """Envía TSPL según el modo configurado."""
+    """Envía TSPL/ZPL según el modo configurado."""
     if config is None:
         config = load_config()
 

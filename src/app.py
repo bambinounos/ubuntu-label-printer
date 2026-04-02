@@ -11,8 +11,9 @@ from gi.repository import Gtk, Gdk, GLib
 
 from src.label_canvas import LabelCanvas
 from src.tspl_generator import TSPLGenerator
+from src.zpl_generator import ZPLGenerator
 from src.connection import (
-    load_config, save_config, send_tspl, test_connection_async,
+    load_config, save_config, send_raw, test_connection_async,
     get_status_async, list_printers,
 )
 from src.webserver import WebServerManager
@@ -45,6 +46,8 @@ class MainWindow(Gtk.ApplicationWindow):
         )
 
         self.generator = TSPLGenerator()
+        self.zpl_generator = ZPLGenerator()
+        self.language = "tspl"  # "tspl" o "zpl"
         self.elements = []
         self.current_template = None
         self.conn_config = load_config()
@@ -293,7 +296,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         return box
 
-    # ── Panel Editor TSPL + Controles ──
+    # ── Panel Editor TSPL/ZPL + Controles ──
 
     def _build_editor_panel(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -302,22 +305,30 @@ class MainWindow(Gtk.ApplicationWindow):
         box.set_margin_start(8)
         box.set_margin_end(8)
 
-        # Título
+        # Título + selector de lenguaje
         title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        lbl = Gtk.Label()
-        lbl.set_markup("<b>Editor TSPL</b>")
-        title_box.pack_start(lbl, False, False, 0)
+        self.lbl_editor_title = Gtk.Label()
+        self.lbl_editor_title.set_markup("<b>Editor TSPL</b>")
+        title_box.pack_start(self.lbl_editor_title, False, False, 0)
 
-        # Botón sincronizar visual -> TSPL
-        btn_sync_to_tspl = Gtk.Button(label="Visual → TSPL")
-        btn_sync_to_tspl.set_tooltip_text("Regenerar TSPL desde los elementos visuales")
-        btn_sync_to_tspl.connect("clicked", self._on_sync_to_tspl)
-        title_box.pack_end(btn_sync_to_tspl, False, False, 0)
+        # Combo lenguaje
+        self.lang_combo = Gtk.ComboBoxText()
+        self.lang_combo.append("tspl", "TSPL")
+        self.lang_combo.append("zpl", "ZPL")
+        self.lang_combo.set_active_id("tspl")
+        self.lang_combo.connect("changed", self._on_language_changed)
+        title_box.pack_start(self.lang_combo, False, False, 0)
 
-        btn_sync_to_visual = Gtk.Button(label="TSPL → Visual")
-        btn_sync_to_visual.set_tooltip_text("Parsear TSPL y actualizar vista previa")
-        btn_sync_to_visual.connect("clicked", self._on_sync_to_visual)
-        title_box.pack_end(btn_sync_to_visual, False, False, 0)
+        # Botón sincronizar visual -> código
+        self.btn_sync_to_code = Gtk.Button(label="Visual → TSPL")
+        self.btn_sync_to_code.set_tooltip_text("Regenerar código desde los elementos visuales")
+        self.btn_sync_to_code.connect("clicked", self._on_sync_to_tspl)
+        title_box.pack_end(self.btn_sync_to_code, False, False, 0)
+
+        self.btn_sync_to_visual = Gtk.Button(label="TSPL → Visual")
+        self.btn_sync_to_visual.set_tooltip_text("Parsear código y actualizar vista previa")
+        self.btn_sync_to_visual.connect("clicked", self._on_sync_to_visual)
+        title_box.pack_end(self.btn_sync_to_visual, False, False, 0)
 
         box.pack_start(title_box, False, False, 0)
 
@@ -413,6 +424,25 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # ── Callbacks ──
 
+    def _on_language_changed(self, combo):
+        lang = combo.get_active_id()
+        if lang == self.language:
+            return
+        self.language = lang
+        label = "TSPL" if lang == "tspl" else "ZPL"
+        self.lbl_editor_title.set_markup(f"<b>Editor {label}</b>")
+        self.btn_sync_to_code.set_label(f"Visual → {label}")
+        self.btn_sync_to_visual.set_label(f"{label} → Visual")
+        # Regenerar código desde elementos actuales
+        if self.elements:
+            self._refresh_from_elements()
+
+    def _get_active_generator(self):
+        """Retorna el generador activo según el lenguaje seleccionado."""
+        if self.language == "zpl":
+            return self.zpl_generator
+        return self.generator
+
     def _on_template_clicked(self, button, template_key):
         tmpl = TEMPLATES[template_key]
         self.current_template = template_key
@@ -425,10 +455,7 @@ class MainWindow(Gtk.ApplicationWindow):
             else:
                 ctx.remove_class("active")
 
-        # Cargar TSPL en editor
-        self.tspl_buffer.set_text(tmpl["tspl"])
-
-        # Parsear y mostrar en canvas
+        # Parsear desde TSPL (fuente canónica de las plantillas)
         config, elements = self.generator.parse_tspl(tmpl["tspl"])
         self.elements = elements
 
@@ -440,8 +467,15 @@ class MainWindow(Gtk.ApplicationWindow):
         self.canvas.set_label_size(w, h)
         self.canvas.set_elements(elements)
 
+        # Generar código en el lenguaje activo
+        gen = self._get_active_generator()
+        gen.width_mm = w
+        gen.height_mm = h
+        copies = config.get("copies", 1)
+        self.tspl_buffer.set_text(gen.generate(elements, copies))
+
         # Actualizar copias
-        self.spin_copies.set_value(config.get("copies", 1))
+        self.spin_copies.set_value(copies)
 
     def _on_size_changed(self, combo):
         size_id = combo.get_active_id()
@@ -500,20 +534,26 @@ class MainWindow(Gtk.ApplicationWindow):
         self._refresh_from_elements()
 
     def _refresh_from_elements(self):
-        """Regenera TSPL desde elementos y actualiza canvas."""
+        """Regenera código desde elementos y actualiza canvas."""
         w = int(self.spin_w.get_value())
         h = int(self.spin_h.get_value())
-        self.generator.width_mm = w
-        self.generator.height_mm = h
 
+        gen = self._get_active_generator()
+        gen.width_mm = w
+        gen.height_mm = h
+
+        # Configurar parámetros específicos del generador
         speed = int(self.spin_speed.get_value())
         density = int(self.spin_density.get_value())
-        self.generator.speed = speed if speed > 0 else None
-        self.generator.density = density if density != 8 else None
+        if self.language == "tspl":
+            self.generator.speed = speed if speed > 0 else None
+            self.generator.density = density if density != 8 else None
+        else:
+            self.zpl_generator.darkness = density * 2  # TSPL 0-15 -> ZPL 0-30
 
         copies = int(self.spin_copies.get_value())
-        tspl = self.generator.generate(self.elements, copies)
-        self.tspl_buffer.set_text(tspl)
+        code = gen.generate(self.elements, copies)
+        self.tspl_buffer.set_text(code)
         self.canvas.set_elements(self.elements)
 
     def _on_sync_to_tspl(self, button):
@@ -521,8 +561,13 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_sync_to_visual(self, button):
         start, end = self.tspl_buffer.get_bounds()
-        tspl = self.tspl_buffer.get_text(start, end, True)
-        config, elements = self.generator.parse_tspl(tspl)
+        code = self.tspl_buffer.get_text(start, end, True)
+
+        if self.language == "zpl":
+            config, elements = self.zpl_generator.parse_zpl(code)
+        else:
+            config, elements = self.generator.parse_tspl(code)
+
         self.elements = elements
 
         w = config.get("width_mm", 60)
@@ -531,14 +576,21 @@ class MainWindow(Gtk.ApplicationWindow):
         self.spin_h.set_value(h)
         self.generator.width_mm = w
         self.generator.height_mm = h
+        self.zpl_generator.width_mm = w
+        self.zpl_generator.height_mm = h
         self.canvas.set_label_size(w, h)
         self.canvas.set_elements(elements)
 
         self.spin_copies.set_value(config.get("copies", 1))
         speed = config.get("speed")
         self.spin_speed.set_value(speed if speed else 0)
-        density = config.get("density")
-        self.spin_density.set_value(density if density else 8)
+        density = config.get("density") or config.get("darkness")
+        if density and self.language == "zpl":
+            self.spin_density.set_value(min(15, density // 2))
+        elif density:
+            self.spin_density.set_value(density)
+        else:
+            self.spin_density.set_value(8)
 
     def _on_print(self, button):
         start, end = self.tspl_buffer.get_bounds()
@@ -558,7 +610,7 @@ class MainWindow(Gtk.ApplicationWindow):
         log.debug(f"Config: {self.conn_config}")
 
         try:
-            ok, msg = send_tspl(tspl, self.conn_config)
+            ok, msg = send_raw(tspl, self.conn_config)
             log.info(f"Resultado: ok={ok}, msg={msg}")
         except Exception as e:
             log.error(f"Excepción al imprimir: {e}", exc_info=True)
