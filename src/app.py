@@ -7,7 +7,10 @@ from gi.repository import Gtk, Gdk, GLib
 
 from src.label_canvas import LabelCanvas
 from src.tspl_generator import TSPLGenerator
-from src.printer import send_to_printer, get_printer_status_async, list_printers, CUPS_PRINTER
+from src.connection import (
+    load_config, save_config, send_tspl, test_connection_async,
+    get_status_async, list_printers,
+)
 from src.templates import TEMPLATES, LABEL_SIZES
 from src.label_elements import (
     TextElement, BarcodeElement, QRElement, LineElement, BoxElement, CircleElement
@@ -39,6 +42,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.generator = TSPLGenerator()
         self.elements = []
         self.current_template = None
+        self.conn_config = load_config()
 
         self._apply_css()
         self._build_ui()
@@ -102,14 +106,20 @@ class MainWindow(Gtk.ApplicationWindow):
         header.set_subtitle("HT300 - TSPL")
         self.set_titlebar(header)
 
+        # Botón configurar conexión
+        btn_conn = Gtk.Button.new_from_icon_name("preferences-system", Gtk.IconSize.BUTTON)
+        btn_conn.set_tooltip_text("Configurar conexión de impresora")
+        btn_conn.connect("clicked", self._on_connection_settings)
+        header.pack_end(btn_conn)
+
         # Status en el header
         self.status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.lbl_cups_status = Gtk.Label(label="CUPS: ...")
-        self.lbl_cups_status.get_style_context().add_class("status-label")
-        self.lbl_usb_status = Gtk.Label(label="USB: ...")
-        self.lbl_usb_status.get_style_context().add_class("status-label")
-        self.status_box.pack_start(self.lbl_cups_status, False, False, 0)
-        self.status_box.pack_start(self.lbl_usb_status, False, False, 0)
+        self.lbl_status = Gtk.Label(label="...")
+        self.lbl_status.get_style_context().add_class("status-label")
+        self.lbl_conn = Gtk.Label(label="...")
+        self.lbl_conn.get_style_context().add_class("status-label")
+        self.status_box.pack_start(self.lbl_status, False, False, 0)
+        self.status_box.pack_start(self.lbl_conn, False, False, 0)
         header.pack_end(self.status_box)
 
         # Layout principal: 3 columnas
@@ -327,18 +337,14 @@ class MainWindow(Gtk.ApplicationWindow):
         # Controles de impresión
         print_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
-        # Selector de impresora
-        lbl_printer = Gtk.Label(label="Impresora:")
-        print_box.pack_start(lbl_printer, False, False, 0)
-
-        self.printer_combo = Gtk.ComboBoxText()
-        printers = list_printers()
-        if CUPS_PRINTER not in printers:
-            self.printer_combo.append(CUPS_PRINTER, CUPS_PRINTER)
-        for p in printers:
-            self.printer_combo.append(p, p)
-        self.printer_combo.set_active_id(CUPS_PRINTER)
-        print_box.pack_start(self.printer_combo, False, False, 0)
+        # Modo actual
+        mode_names = {"cups": "CUPS", "network": "Red TCP", "usb": "USB directo"}
+        mode = self.conn_config.get("mode", "cups")
+        self.lbl_print_mode = Gtk.Label()
+        self.lbl_print_mode.set_markup(
+            f'<span size="small" color="#8b90a5">{mode_names.get(mode, mode)}</span>'
+        )
+        print_box.pack_start(self.lbl_print_mode, False, False, 0)
 
         # Copias
         lbl_copies = Gtk.Label(label="Copias:")
@@ -524,11 +530,36 @@ class MainWindow(Gtk.ApplicationWindow):
         copies = int(self.spin_copies.get_value())
         tspl = re.sub(r'^PRINT\s+\d+', f'PRINT {copies}', tspl, flags=re.MULTILINE)
 
-        printer = self.printer_combo.get_active_id() or CUPS_PRINTER
-        ok, msg = send_to_printer(tspl, printer)
+        ok, msg = send_tspl(tspl, self.conn_config)
 
         msg_type = Gtk.MessageType.INFO if ok else Gtk.MessageType.ERROR
         self._show_message("Impresión" if ok else "Error", msg, msg_type)
+
+    def _on_connection_settings(self, button):
+        dialog = ConnectionDialog(self, self.conn_config)
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            self.conn_config = dialog.get_config()
+            save_config(self.conn_config)
+            self._update_print_mode_label()
+            self._update_printer_status()
+        dialog.destroy()
+
+    def _update_print_mode_label(self):
+        mode_names = {"cups": "CUPS", "network": "Red TCP", "usb": "USB directo"}
+        mode = self.conn_config.get("mode", "cups")
+        detail = ""
+        if mode == "cups":
+            detail = self.conn_config.get("cups_printer", "HT300")
+        elif mode == "network":
+            ip = self.conn_config.get("network_ip", "?")
+            port = self.conn_config.get("network_port", 9100)
+            detail = f"{ip}:{port}"
+        elif mode == "usb":
+            detail = self.conn_config.get("usb_device", "/dev/usb/lp0")
+        self.lbl_print_mode.set_markup(
+            f'<span size="small" color="#8b90a5">{mode_names.get(mode, mode)} ({detail})</span>'
+        )
 
     def _show_message(self, title, message, msg_type):
         dialog = Gtk.MessageDialog(
@@ -542,34 +573,266 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.destroy()
 
     def _update_printer_status(self):
-        get_printer_status_async(self._apply_printer_status)
+        get_status_async(self.conn_config, self._apply_printer_status)
         return True  # Continuar timer
 
-    def _apply_printer_status(self, status):
+    def _apply_printer_status(self, info):
         """Callback que actualiza la UI con el estado (llamado en main thread)."""
-        cups_text = status.get('cups', 'Desconocido')
-        cups_ok = status.get('cups_ok', False)
         dot = "●"
-        if cups_ok:
-            self.lbl_cups_status.set_markup(
-                f'<span color="#34d399">{dot}</span> CUPS: {cups_text}'
-            )
-        else:
-            self.lbl_cups_status.set_markup(
-                f'<span color="#f87171">{dot}</span> CUPS: {cups_text}'
-            )
+        status_text = info.get('status', '?')
+        ok = info.get('ok', False)
+        conn = info.get('connection', '')
 
-        conn_detail = status.get('connection_detail', '?')
-        device_ok = status.get('device_ok', False)
-        conn_type = status.get('connection', '')
-        if device_ok:
-            self.lbl_usb_status.set_markup(
-                f'<span color="#34d399">{dot}</span> {conn_type}: {conn_detail}'
-            )
+        color = "#34d399" if ok else "#f87171"
+        self.lbl_status.set_markup(
+            f'<span color="{color}">{dot}</span> {status_text}'
+        )
+        self.lbl_conn.set_markup(
+            f'<span size="small" color="#8b90a5">{conn}</span>'
+        )
+
+
+# ── Diálogo de configuración de conexión ──
+
+class ConnectionDialog(Gtk.Dialog):
+    """Diálogo para configurar la conexión con la impresora (CUPS, Red, USB)."""
+
+    def __init__(self, parent, config):
+        super().__init__(
+            title="Configuración de Conexión", transient_for=parent, modal=True
+        )
+        self.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+        )
+        self.set_default_size(500, -1)
+        self.config = config.copy()
+        self._parent = parent
+
+        content = self.get_content_area()
+        content.set_spacing(8)
+
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        main_box.set_margin_top(16)
+        main_box.set_margin_bottom(12)
+        main_box.set_margin_start(16)
+        main_box.set_margin_end(16)
+        content.add(main_box)
+
+        # ── Modo de conexión ──
+        lbl_mode = Gtk.Label()
+        lbl_mode.set_markup("<b>Modo de conexión</b>")
+        lbl_mode.set_xalign(0)
+        main_box.pack_start(lbl_mode, False, False, 0)
+
+        self.radio_cups = Gtk.RadioButton.new_with_label(None, "CUPS (cola de impresión)")
+        self.radio_network = Gtk.RadioButton.new_with_label_from_widget(
+            self.radio_cups, "Red TCP directo (socket)"
+        )
+        self.radio_usb = Gtk.RadioButton.new_with_label_from_widget(
+            self.radio_cups, "USB directo (/dev/usb/lp0)"
+        )
+
+        main_box.pack_start(self.radio_cups, False, False, 0)
+        main_box.pack_start(self.radio_network, False, False, 0)
+        main_box.pack_start(self.radio_usb, False, False, 0)
+
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        main_box.pack_start(sep, False, False, 4)
+
+        # ── Stack con las opciones de cada modo ──
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        main_box.pack_start(self.stack, False, False, 0)
+
+        self.stack.add_named(self._build_cups_page(), "cups")
+        self.stack.add_named(self._build_network_page(), "network")
+        self.stack.add_named(self._build_usb_page(), "usb")
+
+        # Conectar radios
+        self.radio_cups.connect("toggled", self._on_mode_toggled, "cups")
+        self.radio_network.connect("toggled", self._on_mode_toggled, "network")
+        self.radio_usb.connect("toggled", self._on_mode_toggled, "usb")
+
+        # ── Resultado de prueba ──
+        sep2 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        main_box.pack_start(sep2, False, False, 4)
+
+        test_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.btn_test = Gtk.Button(label="Probar Conexión")
+        self.btn_test.connect("clicked", self._on_test)
+        test_box.pack_start(self.btn_test, False, False, 0)
+
+        self.spinner = Gtk.Spinner()
+        test_box.pack_start(self.spinner, False, False, 0)
+        main_box.pack_start(test_box, False, False, 0)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_min_content_height(80)
+        scrolled.set_max_content_height(120)
+        self.test_result = Gtk.Label(label="")
+        self.test_result.set_xalign(0)
+        self.test_result.set_line_wrap(True)
+        self.test_result.set_selectable(True)
+        scrolled.add(self.test_result)
+        main_box.pack_start(scrolled, False, False, 0)
+
+        # Cargar valores actuales
+        self._load_from_config()
+        self.show_all()
+
+    def _build_cups_page(self):
+        grid = Gtk.Grid(column_spacing=8, row_spacing=8)
+        grid.set_margin_top(4)
+
+        grid.attach(Gtk.Label(label="Nombre de cola CUPS:", xalign=0), 0, 0, 1, 1)
+        self.entry_cups_printer = Gtk.ComboBoxText.new_with_entry()
+        # Agregar impresoras detectadas
+        printers = list_printers()
+        for p in printers:
+            self.entry_cups_printer.append_text(p)
+        self.entry_cups_printer.set_hexpand(True)
+        grid.attach(self.entry_cups_printer, 1, 0, 1, 1)
+
+        lbl_help = Gtk.Label()
+        lbl_help.set_markup(
+            '<span size="small" color="#8b90a5">'
+            'Usa <b>lpstat -a</b> para ver colas disponibles.\n'
+            'Crear cola raw: <b>sudo lpadmin -p HT300 -v "usb://..." -m raw -E</b>'
+            '</span>'
+        )
+        lbl_help.set_xalign(0)
+        lbl_help.set_line_wrap(True)
+        grid.attach(lbl_help, 0, 1, 2, 1)
+
+        return grid
+
+    def _build_network_page(self):
+        grid = Gtk.Grid(column_spacing=8, row_spacing=8)
+        grid.set_margin_top(4)
+
+        grid.attach(Gtk.Label(label="Dirección IP:", xalign=0), 0, 0, 1, 1)
+        self.entry_ip = Gtk.Entry()
+        self.entry_ip.set_placeholder_text("192.168.1.100")
+        self.entry_ip.set_hexpand(True)
+        grid.attach(self.entry_ip, 1, 0, 1, 1)
+
+        grid.attach(Gtk.Label(label="Puerto:", xalign=0), 0, 1, 1, 1)
+        self.spin_port = Gtk.SpinButton.new_with_range(1, 65535, 1)
+        self.spin_port.set_value(9100)
+        grid.attach(self.spin_port, 1, 1, 1, 1)
+
+        lbl_help = Gtk.Label()
+        lbl_help.set_markup(
+            '<span size="small" color="#8b90a5">'
+            'Puerto <b>9100</b> = Raw TCP (JetDirect). '
+            'Envía TSPL directamente sin pasar por CUPS.\n'
+            'La impresora debe estar en la misma red.'
+            '</span>'
+        )
+        lbl_help.set_xalign(0)
+        lbl_help.set_line_wrap(True)
+        grid.attach(lbl_help, 0, 2, 2, 1)
+
+        return grid
+
+    def _build_usb_page(self):
+        grid = Gtk.Grid(column_spacing=8, row_spacing=8)
+        grid.set_margin_top(4)
+
+        grid.attach(Gtk.Label(label="Dispositivo:", xalign=0), 0, 0, 1, 1)
+        self.entry_usb_device = Gtk.ComboBoxText.new_with_entry()
+        self.entry_usb_device.append_text("/dev/usb/lp0")
+        self.entry_usb_device.append_text("/dev/usb/lp1")
+        self.entry_usb_device.set_hexpand(True)
+        grid.attach(self.entry_usb_device, 1, 0, 1, 1)
+
+        grid.attach(Gtk.Label(label="USB Vendor:Product:", xalign=0), 0, 1, 1, 1)
+        self.entry_usb_id = Gtk.Entry()
+        self.entry_usb_id.set_placeholder_text("0483:5743")
+        grid.attach(self.entry_usb_id, 1, 1, 1, 1)
+
+        lbl_help = Gtk.Label()
+        lbl_help.set_markup(
+            '<span size="small" color="#8b90a5">'
+            'Escribe directamente al dispositivo USB sin CUPS.\n'
+            'Requiere permisos: <b>sudo chmod 666 /dev/usb/lp0</b>\n'
+            'O agregar usuario al grupo lp: <b>sudo usermod -aG lp $USER</b>'
+            '</span>'
+        )
+        lbl_help.set_xalign(0)
+        lbl_help.set_line_wrap(True)
+        grid.attach(lbl_help, 0, 2, 2, 1)
+
+        return grid
+
+    def _load_from_config(self):
+        mode = self.config.get("mode", "cups")
+        if mode == "network":
+            self.radio_network.set_active(True)
+        elif mode == "usb":
+            self.radio_usb.set_active(True)
         else:
-            self.lbl_usb_status.set_markup(
-                f'<span color="#f59e0b">{dot}</span> {conn_detail}'
-            )
+            self.radio_cups.set_active(True)
+        self.stack.set_visible_child_name(mode)
+
+        # CUPS
+        child = self.entry_cups_printer.get_child()
+        if child:
+            child.set_text(self.config.get("cups_printer", "HT300"))
+
+        # Network
+        self.entry_ip.set_text(self.config.get("network_ip", "192.168.1.100"))
+        self.spin_port.set_value(self.config.get("network_port", 9100))
+
+        # USB
+        child_usb = self.entry_usb_device.get_child()
+        if child_usb:
+            child_usb.set_text(self.config.get("usb_device", "/dev/usb/lp0"))
+        self.entry_usb_id.set_text(self.config.get("usb_vendor_product", "0483:5743"))
+
+    def _on_mode_toggled(self, radio, mode):
+        if radio.get_active():
+            self.stack.set_visible_child_name(mode)
+
+    def _on_test(self, button):
+        self.btn_test.set_sensitive(False)
+        self.spinner.start()
+        self.test_result.set_text("Probando...")
+
+        config = self.get_config()
+        test_connection_async(config, self._on_test_result)
+
+    def _on_test_result(self, ok, message):
+        self.btn_test.set_sensitive(True)
+        self.spinner.stop()
+        color = "#34d399" if ok else "#f87171"
+        icon = "OK" if ok else "ERROR"
+        self.test_result.set_markup(
+            f'<span color="{color}"><b>{icon}</b></span>\n{message}'
+        )
+
+    def get_config(self):
+        config = self.config.copy()
+
+        if self.radio_network.get_active():
+            config["mode"] = "network"
+        elif self.radio_usb.get_active():
+            config["mode"] = "usb"
+        else:
+            config["mode"] = "cups"
+
+        child = self.entry_cups_printer.get_child()
+        config["cups_printer"] = child.get_text() if child else "HT300"
+        config["network_ip"] = self.entry_ip.get_text()
+        config["network_port"] = int(self.spin_port.get_value())
+
+        child_usb = self.entry_usb_device.get_child()
+        config["usb_device"] = child_usb.get_text() if child_usb else "/dev/usb/lp0"
+        config["usb_vendor_product"] = self.entry_usb_id.get_text()
+
+        return config
 
 
 # ── Diálogos para agregar elementos ──
