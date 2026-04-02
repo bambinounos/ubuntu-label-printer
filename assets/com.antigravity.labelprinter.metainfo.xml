@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.antigravity.labelprinter</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Label Printer</name>
+  <name xml:lang="es">Impresora de Etiquetas</name>
+
+  <summary>Design and print TSPL labels for HT300 (HPRT) printers</summary>
+  <summary xml:lang="es">Diseña e imprime etiquetas TSPL para impresoras HT300 (HPRT)</summary>
+
+  <description>
+    <p>Label Printer is a desktop application for designing and printing labels using TSPL commands on HPRT HT300 thermal printers.</p>
+    <p xml:lang="es">Label Printer es una aplicación de escritorio para diseñar e imprimir etiquetas usando comandos TSPL en impresoras térmicas HPRT HT300.</p>
+    <p>Features:</p>
+    <ul>
+      <li>Visual label editor with real-time preview</li>
+      <li>TSPL code editor with bidirectional sync</li>
+      <li>Barcodes (Code 128, Code 39, EAN-13) and QR codes</li>
+      <li>Multiple connection modes: CUPS, Network TCP, USB direct</li>
+      <li>12+ ready-to-use templates for products, shipping, warehouse</li>
+      <li>Export and print with configurable speed and density</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">com.antigravity.labelprinter.desktop</launchable>
+
+  <url type="homepage">https://github.com/bambinounos/ubuntu-label-printer</url>
+  <url type="bugtracker">https://github.com/bambinounos/ubuntu-label-printer/issues</url>
+
+  <developer id="com.antigravity">
+    <name>Antigravity / HELLBAM S.A.</name>
+  </developer>
+
+  <provides>
+    <binary>label-printer</binary>
+  </provides>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.2.0" date="2026-04-02">
+      <description>
+        <p>Connection settings (CUPS, Network TCP, USB), bug fixes, real templates.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-04-02">
+      <description>
+        <p>Initial release with TSPL editor, visual preview, and HT300 support.</p>
+      </description>
+    </release>
+  </releases>
+</component>
