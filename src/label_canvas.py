@@ -1,14 +1,17 @@
-"""Canvas visual que renderiza la vista previa de la etiqueta usando Cairo.
+"""Canvas visual interactivo para etiquetas.
 
-Convierte coordenadas TSPL (dots a 203 DPI, 8 dots/mm) a píxeles de pantalla.
-Compatible con HT300 (HPRT) - Manual Rev.1.2
+Renderiza vista previa con Cairo. Soporta:
+- Click para seleccionar elementos
+- Drag para mover elementos
+- Indicador visual de selección (borde azul + handles)
+- Conversión coordenadas pantalla ↔ dots (203 DPI, 8 dots/mm)
 """
 
 import math
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import Gtk, Gdk
 
 import cairo
 
@@ -18,22 +21,48 @@ from src.label_elements import (
 )
 
 DOTS_PER_MM = 8
+HIT_PADDING = 6  # dots de tolerancia para click en elementos finos
 
 
 class LabelCanvas(Gtk.DrawingArea):
-    """Renderiza una vista previa de la etiqueta TSPL."""
+    """Canvas interactivo con vista previa de etiqueta y drag & drop."""
 
     def __init__(self):
         super().__init__()
+
+        # Eventos de dibujo
         self.connect("draw", self._on_draw)
+
+        # Eventos de mouse
+        self.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK |
+            Gdk.EventMask.BUTTON_RELEASE_MASK |
+            Gdk.EventMask.POINTER_MOTION_MASK
+        )
+        self.connect("button-press-event", self._on_button_press)
+        self.connect("button-release-event", self._on_button_release)
+        self.connect("motion-notify-event", self._on_motion_notify)
+
         self.set_can_focus(True)
 
+        # Estado de la etiqueta
         self.label_width_mm = 60
         self.label_height_mm = 40
         self.elements = []
+
+        # Estado de renderizado (se calculan en _on_draw)
         self.scale = 1.0
         self.offset_x = 0
         self.offset_y = 0
+
+        # Estado de interacción
+        self.selected_element = None
+        self.dragging = False
+        self.drag_offset_x = 0
+        self.drag_offset_y = 0
+
+        # Callback cuando se mueve un elemento (app.py lo conecta)
+        self.on_element_moved = None
 
     def set_label_size(self, width_mm, height_mm):
         self.label_width_mm = width_mm
@@ -43,6 +72,104 @@ class LabelCanvas(Gtk.DrawingArea):
     def set_elements(self, elements):
         self.elements = elements
         self.queue_draw()
+
+    # ── Conversión de coordenadas ──
+
+    def screen_to_dots(self, sx, sy):
+        """Convierte píxeles de pantalla a coordenadas TSPL (dots)."""
+        dx = (sx - self.offset_x) / self.scale
+        dy = (sy - self.offset_y) / self.scale
+        return dx, dy
+
+    def dots_to_screen(self, dx, dy):
+        """Convierte dots TSPL a píxeles de pantalla."""
+        sx = dx * self.scale + self.offset_x
+        sy = dy * self.scale + self.offset_y
+        return sx, sy
+
+    # ── Hit testing ──
+
+    def hit_test(self, dots_x, dots_y):
+        """Busca qué elemento está bajo la coordenada (en dots). Último dibujado = arriba."""
+        for elem in reversed(self.elements):
+            bx, by, bw, bh = elem.get_bounds()
+            # Padding para elementos finos (líneas de 2 dots)
+            pad = HIT_PADDING
+            if bw < pad * 2:
+                bw = pad * 2
+            if bh < pad * 2:
+                bh = pad * 2
+                by -= pad
+            if bx - pad <= dots_x <= bx + bw + pad and \
+               by - pad <= dots_y <= by + bh + pad:
+                return elem
+        return None
+
+    # ── Eventos de mouse ──
+
+    def _on_button_press(self, widget, event):
+        if event.button != 1:
+            return False
+
+        dx, dy = self.screen_to_dots(event.x, event.y)
+        elem = self.hit_test(dx, dy)
+
+        # Deseleccionar anterior
+        if self.selected_element:
+            self.selected_element.selected = False
+
+        self.selected_element = elem
+        if elem:
+            elem.selected = True
+            self.dragging = True
+            self.drag_offset_x = dx - elem.x
+            self.drag_offset_y = dy - elem.y
+        else:
+            self.dragging = False
+
+        self.queue_draw()
+        return True
+
+    def _on_motion_notify(self, widget, event):
+        if not self.dragging or not self.selected_element:
+            return False
+
+        dx, dy = self.screen_to_dots(event.x, event.y)
+        new_x = int(dx - self.drag_offset_x)
+        new_y = int(dy - self.drag_offset_y)
+
+        # Clamp a los límites de la etiqueta
+        label_w = self.label_width_mm * DOTS_PER_MM
+        label_h = self.label_height_mm * DOTS_PER_MM
+        new_x = max(0, min(new_x, label_w - 10))
+        new_y = max(0, min(new_y, label_h - 10))
+
+        elem = self.selected_element
+        delta_x = new_x - elem.x
+        delta_y = new_y - elem.y
+
+        # BoxElement: mover x2/y2 junto con x/y
+        if hasattr(elem, 'x2') and hasattr(elem, 'y2'):
+            elem.x2 += delta_x
+            elem.y2 += delta_y
+
+        elem.x = new_x
+        elem.y = new_y
+
+        self.queue_draw()
+        return True
+
+    def _on_button_release(self, widget, event):
+        if event.button != 1:
+            return False
+
+        if self.dragging and self.on_element_moved:
+            self.on_element_moved()
+
+        self.dragging = False
+        return True
+
+    # ── Dibujo ──
 
     def _on_draw(self, widget, cr):
         alloc = widget.get_allocation()
@@ -95,18 +222,18 @@ class LabelCanvas(Gtk.DrawingArea):
         cr.set_source_rgba(0.85, 0.85, 0.85, 0.3)
         cr.set_line_width(0.5)
         grid_step = 10 * DOTS_PER_MM * self.scale
-        x = self.offset_x + grid_step
-        while x < self.offset_x + rendered_w:
-            cr.move_to(x, self.offset_y)
-            cr.line_to(x, self.offset_y + rendered_h)
+        gx = self.offset_x + grid_step
+        while gx < self.offset_x + rendered_w:
+            cr.move_to(gx, self.offset_y)
+            cr.line_to(gx, self.offset_y + rendered_h)
             cr.stroke()
-            x += grid_step
-        y = self.offset_y + grid_step
-        while y < self.offset_y + rendered_h:
-            cr.move_to(self.offset_x, y)
-            cr.line_to(self.offset_x + rendered_w, y)
+            gx += grid_step
+        gy = self.offset_y + grid_step
+        while gy < self.offset_y + rendered_h:
+            cr.move_to(self.offset_x, gy)
+            cr.line_to(self.offset_x + rendered_w, gy)
             cr.stroke()
-            y += grid_step
+            gy += grid_step
 
         # Tamaño
         cr.set_source_rgba(0.6, 0.6, 0.7, 0.8)
@@ -128,9 +255,13 @@ class LabelCanvas(Gtk.DrawingArea):
         for elem in self.elements:
             self._draw_element(cr, elem)
 
+        # Dibujar indicador de selección
+        if self.selected_element:
+            self._draw_selection(cr, self.selected_element)
+
         cr.restore()
 
-        # Placeholder
+        # Placeholder si no hay elementos
         if not self.elements:
             cr.set_source_rgba(0.6, 0.6, 0.6, 0.5)
             cr.set_font_size(13)
@@ -141,6 +272,41 @@ class LabelCanvas(Gtk.DrawingArea):
                 self.offset_y + rendered_h / 2
             )
             cr.show_text(text)
+
+    def _draw_selection(self, cr, elem):
+        """Dibuja borde azul y handles alrededor del elemento seleccionado."""
+        bx, by, bw, bh = elem.get_bounds()
+        pad = 3
+
+        # Borde azul punteado
+        cr.set_source_rgba(0.2, 0.5, 1.0, 0.8)
+        cr.set_line_width(2)
+        cr.set_dash([4, 3])
+        cr.rectangle(bx - pad, by - pad, bw + pad * 2, bh + pad * 2)
+        cr.stroke()
+        cr.set_dash([])
+
+        # Handles en las esquinas
+        handle_size = 5
+        cr.set_source_rgba(0.2, 0.5, 1.0, 1.0)
+        for hx, hy in [
+            (bx - pad, by - pad),
+            (bx + bw + pad - handle_size, by - pad),
+            (bx - pad, by + bh + pad - handle_size),
+            (bx + bw + pad - handle_size, by + bh + pad - handle_size),
+        ]:
+            cr.rectangle(hx, hy, handle_size, handle_size)
+            cr.fill()
+
+        # Coordenadas del elemento
+        cr.set_source_rgba(0.2, 0.5, 1.0, 0.9)
+        cr.set_font_size(10)
+        cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        coord_text = f"({elem.x}, {elem.y})"
+        cr.move_to(bx - pad, by - pad - 4)
+        cr.show_text(coord_text)
+
+    # ── Dibujo de elementos ──
 
     def _draw_element(self, cr, elem):
         if isinstance(elem, TextElement):
@@ -192,7 +358,6 @@ class LabelCanvas(Gtk.DrawingArea):
 
         cr.set_source_rgb(0, 0, 0)
 
-        # Simular barras usando hash del dato para patrón consistente
         import hashlib
         seed = hashlib.md5(elem.data.encode()).digest()
         bar_x = x

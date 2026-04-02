@@ -151,17 +151,23 @@ class TSPLGenerator:
         parts = []
         current = ""
         in_quotes = False
+        skip_comma = False
         for ch in params:
             if ch == '"':
                 in_quotes = not in_quotes
                 if not in_quotes:
                     parts.append(current)
                     current = ""
+                    skip_comma = True
                 continue
             if ch == ',' and not in_quotes:
+                if skip_comma:
+                    skip_comma = False
+                    continue
                 parts.append(current.strip())
                 current = ""
                 continue
+            skip_comma = False
             current += ch
         if current.strip():
             parts.append(current.strip())

@@ -292,9 +292,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.canvas = LabelCanvas()
         self.canvas.set_size_request(300, 250)
+        self.canvas.on_element_moved = self._on_element_moved_on_canvas
         box.pack_start(self.canvas, True, True, 0)
 
         return box
+
+    def _on_element_moved_on_canvas(self):
+        """Regenera código cuando un elemento se mueve por drag."""
+        self._refresh_from_elements()
 
     # ── Panel Editor TSPL/ZPL + Controles ──
 
