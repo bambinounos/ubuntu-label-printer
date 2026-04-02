@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Label Printer
+GenericName=Impresora de Etiquetas
+Comment=Diseña e imprime etiquetas TSPL para HT300 (HPRT)
+Exec=INSTALL_DIR/run.sh
+Icon=label-printer
+Terminal=false
+Type=Application
+Categories=Utility;Printing;Office;
+Keywords=label;etiqueta;barcode;qr;printer;impresora;tspl;ht300;
+StartupNotify=true
