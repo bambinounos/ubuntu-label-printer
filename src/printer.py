@@ -1,11 +1,16 @@
-"""Impresión via CUPS - envía comandos TSPL raw a la impresora HT300."""
+"""Impresión via CUPS - envía comandos TSPL raw a la impresora HT300.
+
+Soporta conexión USB directa y red (IPP/mDNS).
+"""
 
 import os
 import subprocess
 import tempfile
+import threading
 
-CUPS_PRINTER = "HT300-TSPL"
+CUPS_PRINTER = "HT300"
 USB_DEVICE = "/dev/usb/lp0"
+USB_VENDOR_PRODUCT = "0483:5743"
 
 
 def send_to_printer(tspl_content, printer_name=None):
@@ -44,10 +49,11 @@ def send_to_printer(tspl_content, printer_name=None):
 
 
 def get_printer_status(printer_name=None):
-    """Obtiene el estado de la impresora."""
+    """Obtiene el estado de la impresora (no bloquear con esto en main thread)."""
     printer = printer_name or CUPS_PRINTER
     info = {}
 
+    # Estado CUPS
     try:
         r = subprocess.run(
             ['lpstat', '-p', printer],
@@ -56,13 +62,13 @@ def get_printer_status(printer_name=None):
         if r.returncode == 0:
             status = r.stdout.strip()
             if 'idle' in status.lower():
-                info['cups'] = 'Lista'
+                info['cups'] = 'Lista (idle)'
                 info['cups_ok'] = True
             elif 'printing' in status.lower():
                 info['cups'] = 'Imprimiendo...'
                 info['cups_ok'] = True
             else:
-                info['cups'] = status
+                info['cups'] = status.split('\n')[0][:50]
                 info['cups_ok'] = True
         else:
             info['cups'] = 'No configurada'
@@ -74,21 +80,64 @@ def get_printer_status(printer_name=None):
         info['cups'] = 'CUPS no disponible'
         info['cups_ok'] = False
 
-    info['usb'] = 'Conectado' if os.path.exists(USB_DEVICE) else 'Bajo consumo'
-
-    try:
-        r = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=5)
-        if '0483:5743' in r.stdout:
-            info['device'] = 'HT300 detectada en USB'
-            info['device_ok'] = True
-        else:
-            info['device'] = 'HT300 no detectada'
-            info['device_ok'] = False
-    except Exception:
-        info['device'] = 'No se pudo verificar'
-        info['device_ok'] = False
+    # Tipo de conexión: USB o red
+    connection = _detect_connection(printer)
+    info['connection'] = connection['type']
+    info['connection_detail'] = connection['detail']
+    info['device_ok'] = connection['ok']
 
     return info
+
+
+def _detect_connection(printer):
+    """Detecta si la impresora está conectada via USB o red."""
+    # Verificar device URI en CUPS
+    try:
+        r = subprocess.run(
+            ['lpstat', '-v', printer],
+            capture_output=True, text=True, timeout=5
+        )
+        if r.returncode == 0:
+            uri = r.stdout.strip()
+            if 'usb://' in uri:
+                usb_connected = os.path.exists(USB_DEVICE)
+                return {
+                    'type': 'USB',
+                    'detail': f"USB {'conectado' if usb_connected else 'desconectado'}",
+                    'ok': usb_connected,
+                }
+            elif 'socket://' in uri or 'ipp://' in uri or 'dnssd://' in uri or 'implicitclass://' in uri:
+                return {
+                    'type': 'Red',
+                    'detail': 'Red (IPP/mDNS)',
+                    'ok': True,
+                }
+    except Exception:
+        pass
+
+    # Fallback: verificar USB directamente
+    try:
+        r = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=5)
+        if USB_VENDOR_PRODUCT in r.stdout:
+            return {'type': 'USB', 'detail': 'HT300 en USB', 'ok': True}
+    except Exception:
+        pass
+
+    return {'type': 'Desconocido', 'detail': 'No detectada', 'ok': False}
+
+
+def get_printer_status_async(callback, printer_name=None):
+    """Obtiene estado en background thread y llama callback en main thread."""
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GLib
+
+    def _worker():
+        status = get_printer_status(printer_name)
+        GLib.idle_add(callback, status)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
 
 
 def list_printers():

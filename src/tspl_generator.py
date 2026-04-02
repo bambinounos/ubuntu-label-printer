@@ -147,7 +147,7 @@ class TSPLGenerator:
         return config, elements
 
     def _split_params(self, params):
-        """Divide parámetros respetando comillas."""
+        """Divide parámetros respetando comillas. Preserva campos vacíos."""
         parts = []
         current = ""
         in_quotes = False
@@ -159,8 +159,7 @@ class TSPLGenerator:
                     current = ""
                 continue
             if ch == ',' and not in_quotes:
-                if current.strip():
-                    parts.append(current.strip())
+                parts.append(current.strip())
                 current = ""
                 continue
             current += ch

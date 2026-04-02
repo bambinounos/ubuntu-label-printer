@@ -3,11 +3,11 @@
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, GLib, Pango
+from gi.repository import Gtk, Gdk, GLib
 
 from src.label_canvas import LabelCanvas
 from src.tspl_generator import TSPLGenerator
-from src.printer import send_to_printer, get_printer_status, list_printers
+from src.printer import send_to_printer, get_printer_status_async, list_printers, CUPS_PRINTER
 from src.templates import TEMPLATES, LABEL_SIZES
 from src.label_elements import (
     TextElement, BarcodeElement, QRElement, LineElement, BoxElement, CircleElement
@@ -79,9 +79,6 @@ class MainWindow(Gtk.ApplicationWindow):
             padding: 8px 20px;
         }
         .accent-button:hover { background: #fbbf24; }
-        .success-dot { color: #34d399; }
-        .error-dot { color: #f87171; }
-        .warn-dot { color: #f59e0b; }
         .tspl-view {
             font-family: monospace;
             font-size: 12px;
@@ -89,13 +86,6 @@ class MainWindow(Gtk.ApplicationWindow):
             color: #e4e7f1;
         }
         .status-label { font-size: 11px; color: #8b90a5; }
-        .element-row {
-            background: #242836;
-            border: 1px solid #2e3347;
-            border-radius: 4px;
-            padding: 6px 8px;
-        }
-        .element-row:hover { border-color: #f59e0b; }
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css)
@@ -342,12 +332,12 @@ class MainWindow(Gtk.ApplicationWindow):
         print_box.pack_start(lbl_printer, False, False, 0)
 
         self.printer_combo = Gtk.ComboBoxText()
-        self.printer_combo.append("HT300-TSPL", "HT300-TSPL")
         printers = list_printers()
+        if CUPS_PRINTER not in printers:
+            self.printer_combo.append(CUPS_PRINTER, CUPS_PRINTER)
         for p in printers:
-            if p != "HT300-TSPL":
-                self.printer_combo.append(p, p)
-        self.printer_combo.set_active_id("HT300-TSPL")
+            self.printer_combo.append(p, p)
+        self.printer_combo.set_active_id(CUPS_PRINTER)
         print_box.pack_start(self.printer_combo, False, False, 0)
 
         # Copias
@@ -505,10 +495,21 @@ class MainWindow(Gtk.ApplicationWindow):
         tspl = self.tspl_buffer.get_text(start, end, True)
         config, elements = self.generator.parse_tspl(tspl)
         self.elements = elements
-        self.spin_w.set_value(config.get("width_mm", 60))
-        self.spin_h.set_value(config.get("height_mm", 40))
-        self.canvas.set_label_size(config["width_mm"], config["height_mm"])
+
+        w = config.get("width_mm", 60)
+        h = config.get("height_mm", 40)
+        self.spin_w.set_value(w)
+        self.spin_h.set_value(h)
+        self.generator.width_mm = w
+        self.generator.height_mm = h
+        self.canvas.set_label_size(w, h)
         self.canvas.set_elements(elements)
+
+        self.spin_copies.set_value(config.get("copies", 1))
+        speed = config.get("speed")
+        self.spin_speed.set_value(speed if speed else 0)
+        density = config.get("density")
+        self.spin_density.set_value(density if density else 8)
 
     def _on_print(self, button):
         start, end = self.tspl_buffer.get_bounds()
@@ -518,13 +519,12 @@ class MainWindow(Gtk.ApplicationWindow):
             self._show_message("Error", "No hay código TSPL para imprimir.", Gtk.MessageType.ERROR)
             return
 
-        # Ajustar copias
+        # Ajustar copias (siempre aplicar el valor del spinner)
+        import re
         copies = int(self.spin_copies.get_value())
-        if copies > 1:
-            import re
-            tspl = re.sub(r'PRINT\s+\d+', f'PRINT {copies}', tspl)
+        tspl = re.sub(r'^PRINT\s+\d+', f'PRINT {copies}', tspl, flags=re.MULTILINE)
 
-        printer = self.printer_combo.get_active_id() or "HT300-TSPL"
+        printer = self.printer_combo.get_active_id() or CUPS_PRINTER
         ok, msg = send_to_printer(tspl, printer)
 
         msg_type = Gtk.MessageType.INFO if ok else Gtk.MessageType.ERROR
@@ -542,8 +542,11 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.destroy()
 
     def _update_printer_status(self):
-        status = get_printer_status()
+        get_printer_status_async(self._apply_printer_status)
+        return True  # Continuar timer
 
+    def _apply_printer_status(self, status):
+        """Callback que actualiza la UI con el estado (llamado en main thread)."""
         cups_text = status.get('cups', 'Desconocido')
         cups_ok = status.get('cups_ok', False)
         dot = "●"
@@ -556,18 +559,17 @@ class MainWindow(Gtk.ApplicationWindow):
                 f'<span color="#f87171">{dot}</span> CUPS: {cups_text}'
             )
 
-        usb_text = status.get('usb', '?')
+        conn_detail = status.get('connection_detail', '?')
         device_ok = status.get('device_ok', False)
+        conn_type = status.get('connection', '')
         if device_ok:
             self.lbl_usb_status.set_markup(
-                f'<span color="#34d399">{dot}</span> USB: {usb_text}'
+                f'<span color="#34d399">{dot}</span> {conn_type}: {conn_detail}'
             )
         else:
             self.lbl_usb_status.set_markup(
-                f'<span color="#f59e0b">{dot}</span> USB: {usb_text}'
+                f'<span color="#f59e0b">{dot}</span> {conn_detail}'
             )
-
-        return True  # Continuar timer
 
 
 # ── Diálogos para agregar elementos ──
