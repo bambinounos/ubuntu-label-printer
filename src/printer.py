@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import threading
 
-CUPS_PRINTER = "HT300"
+CUPS_PRINTER = "HT300-TSPL"
 USB_DEVICE = "/dev/usb/lp0"
 USB_VENDOR_PRODUCT = "0483:5743"
 

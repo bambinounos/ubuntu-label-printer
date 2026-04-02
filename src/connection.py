@@ -14,7 +14,7 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "connection.json")
 
 DEFAULT_CONFIG = {
     "mode": "cups",         # "cups", "network", "usb"
-    "cups_printer": "HT300",
+    "cups_printer": "HT300-TSPL",
     "network_ip": "192.168.1.100",
     "network_port": 9100,
     "usb_device": "/dev/usb/lp0",
