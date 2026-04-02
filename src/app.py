@@ -11,6 +11,7 @@ from src.connection import (
     load_config, save_config, send_tspl, test_connection_async,
     get_status_async, list_printers,
 )
+from src.webserver import WebServerManager
 from src.templates import TEMPLATES, LABEL_SIZES
 from src.label_elements import (
     TextElement, BarcodeElement, QRElement, LineElement, BoxElement, CircleElement
@@ -43,9 +44,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.elements = []
         self.current_template = None
         self.conn_config = load_config()
+        self.web_server = WebServerManager()
 
         self._apply_css()
         self._build_ui()
+
+        # Detener servidor web al cerrar la ventana
+        self.connect("destroy", lambda w: self._cleanup_web_server())
 
         # Estado de impresora
         GLib.timeout_add_seconds(10, self._update_printer_status)
@@ -111,6 +116,20 @@ class MainWindow(Gtk.ApplicationWindow):
         btn_conn.set_tooltip_text("Configurar conexión de impresora")
         btn_conn.connect("clicked", self._on_connection_settings)
         header.pack_end(btn_conn)
+
+        # Botón servidor web
+        self.btn_web = Gtk.ToggleButton()
+        web_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        web_box.pack_start(
+            Gtk.Image.new_from_icon_name("network-server", Gtk.IconSize.BUTTON),
+            False, False, 0
+        )
+        self.lbl_web_btn = Gtk.Label(label="Web")
+        web_box.pack_start(self.lbl_web_btn, False, False, 0)
+        self.btn_web.add(web_box)
+        self.btn_web.set_tooltip_text("Iniciar/detener interfaz web (puerto 5080)")
+        self.btn_web.connect("toggled", self._on_web_toggle)
+        header.pack_end(self.btn_web)
 
         # Status en el header
         self.status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -571,6 +590,42 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.format_secondary_text(message)
         dialog.run()
         dialog.destroy()
+
+    def _on_web_toggle(self, button):
+        if button.get_active():
+            ok, msg = self.web_server.start(port=5080)
+            if ok:
+                self.lbl_web_btn.set_text("Web ON")
+                self.btn_web.set_tooltip_text(
+                    f"Servidor web activo — {self.web_server.get_url()}\nClick para detener"
+                )
+                # Ofrecer abrir en navegador
+                dialog = Gtk.MessageDialog(
+                    transient_for=self, modal=True,
+                    message_type=Gtk.MessageType.INFO,
+                    buttons=Gtk.ButtonsType.YES_NO,
+                    text="Servidor web iniciado",
+                )
+                dialog.format_secondary_text(
+                    f"{msg}\n\n¿Abrir en el navegador?"
+                )
+                response = dialog.run()
+                dialog.destroy()
+                if response == Gtk.ResponseType.YES:
+                    import subprocess
+                    subprocess.Popen(["xdg-open", self.web_server.get_url()])
+            else:
+                button.set_active(False)
+                self._show_message("Error", msg, Gtk.MessageType.ERROR)
+        else:
+            ok, msg = self.web_server.stop()
+            self.lbl_web_btn.set_text("Web")
+            self.btn_web.set_tooltip_text("Iniciar/detener interfaz web (puerto 5080)")
+
+    def _cleanup_web_server(self):
+        """Detiene el servidor web al cerrar la app."""
+        if self.web_server.running:
+            self.web_server.stop()
 
     def _update_printer_status(self):
         get_status_async(self.conn_config, self._apply_printer_status)
