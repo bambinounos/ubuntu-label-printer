@@ -1,31 +1,32 @@
 #!/bin/bash
 # Instalador de dependencias para Label Printer en Ubuntu
 
-echo "=== Label Printer - Instalador ==="
+echo "=== Label Printer HT300 - Instalador ==="
 echo ""
 
 # Dependencias del sistema
-echo "[1/3] Instalando dependencias del sistema..."
+echo "[1/2] Instalando dependencias del sistema..."
 sudo apt-get update
 sudo apt-get install -y \
     python3-gi \
     python3-gi-cairo \
     gir1.2-gtk-3.0 \
-    python3-pip \
-    python3-venv
+    cups \
+    python3-pip
 
-# Entorno virtual
+# Verificar impresora CUPS
 echo ""
-echo "[2/3] Creando entorno virtual..."
-cd "$(dirname "$0")"
-python3 -m venv venv --system-site-packages
-source venv/bin/activate
-
-# Dependencias Python
-echo ""
-echo "[3/3] Instalando dependencias Python..."
-pip install python-barcode qrcode Pillow
+echo "[2/2] Verificando impresora CUPS..."
+if lpstat -p HT300-TSPL 2>/dev/null | grep -q "printer"; then
+    echo "  ✓ Impresora HT300-TSPL configurada en CUPS"
+else
+    echo "  ✗ Impresora HT300-TSPL NO encontrada en CUPS"
+    echo "  Para configurarla:"
+    echo "    sudo lpadmin -p HT300-TSPL -v \"usb://XPrinter/BAR%20PRINTER?serial=?\" -m raw -E"
+    echo "  O usa la interfaz web de CUPS: http://localhost:631"
+fi
 
 echo ""
 echo "=== Instalación completada ==="
-echo "Ejecuta: ./run.sh"
+echo "Ejecutar: ./run.sh"
+echo "Interfaz web alternativa: python3 ht300_web.py"

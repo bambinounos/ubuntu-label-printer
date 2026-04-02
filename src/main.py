@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Punto de entrada principal de la aplicación Label Printer."""
+"""Punto de entrada principal de Label Printer."""
 
 import sys
 import gi

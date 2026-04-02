@@ -10,9 +10,6 @@ setup(
     install_requires=[
         "PyGObject>=3.42.0",
         "pycairo>=1.20.0",
-        "python-barcode>=0.15.1",
-        "qrcode>=7.4",
-        "Pillow>=9.0.0",
     ],
     entry_points={
         "console_scripts": [
