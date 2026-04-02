@@ -1,5 +1,9 @@
 """Aplicación principal GTK para Label Printer con soporte TSPL/HT300."""
 
+import logging
+
+log = logging.getLogger("label-printer")
+
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -549,7 +553,16 @@ class MainWindow(Gtk.ApplicationWindow):
         copies = int(self.spin_copies.get_value())
         tspl = re.sub(r'^PRINT\s+\d+', f'PRINT {copies}', tspl, flags=re.MULTILINE)
 
-        ok, msg = send_tspl(tspl, self.conn_config)
+        log.info(f"Imprimiendo: mode={self.conn_config.get('mode')}, copies={copies}")
+        log.debug(f"TSPL:\n{tspl[:200]}...")
+        log.debug(f"Config: {self.conn_config}")
+
+        try:
+            ok, msg = send_tspl(tspl, self.conn_config)
+            log.info(f"Resultado: ok={ok}, msg={msg}")
+        except Exception as e:
+            log.error(f"Excepción al imprimir: {e}", exc_info=True)
+            ok, msg = False, f"Error inesperado: {e}"
 
         msg_type = Gtk.MessageType.INFO if ok else Gtk.MessageType.ERROR
         self._show_message("Impresión" if ok else "Error", msg, msg_type)

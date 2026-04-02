@@ -1,4 +1,6 @@
 #!/bin/bash
-# Script para ejecutar Label Printer
+# Lanzador de Label Printer
+# Log en: /tmp/label-printer.log
 cd "$(dirname "$0")"
-python3 -m src.main
+echo "=== Label Printer $(date) ===" >> /tmp/label-printer.log
+exec python3 -m src.main "$@"
