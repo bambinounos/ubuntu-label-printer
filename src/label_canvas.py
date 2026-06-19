@@ -17,11 +17,13 @@ import cairo
 
 from src.label_elements import (
     TextElement, BarcodeElement, QRElement,
-    LineElement, BoxElement, CircleElement
+    LineElement, BoxElement, CircleElement, ImageElement
 )
 
 DOTS_PER_MM = 8
 HIT_PADDING = 6  # dots de tolerancia para click en elementos finos
+HANDLE_PX = 9    # tolerancia en píxeles de pantalla para agarrar un handle de resize
+HANDLE_NAMES = ("nw", "ne", "sw", "se")
 
 
 class LabelCanvas(Gtk.DrawingArea):
@@ -33,15 +35,17 @@ class LabelCanvas(Gtk.DrawingArea):
         # Eventos de dibujo
         self.connect("draw", self._on_draw)
 
-        # Eventos de mouse
+        # Eventos de mouse + teclado
         self.add_events(
             Gdk.EventMask.BUTTON_PRESS_MASK |
             Gdk.EventMask.BUTTON_RELEASE_MASK |
-            Gdk.EventMask.POINTER_MOTION_MASK
+            Gdk.EventMask.POINTER_MOTION_MASK |
+            Gdk.EventMask.KEY_PRESS_MASK
         )
         self.connect("button-press-event", self._on_button_press)
         self.connect("button-release-event", self._on_button_release)
         self.connect("motion-notify-event", self._on_motion_notify)
+        self.connect("key-press-event", self._on_key_press)
 
         self.set_can_focus(True)
 
@@ -58,11 +62,24 @@ class LabelCanvas(Gtk.DrawingArea):
         # Estado de interacción
         self.selected_element = None
         self.dragging = False
+        self.resizing = None  # nombre del handle ('nw'/'ne'/'sw'/'se') o None
+        self._mutated = False  # hubo cambio real durante el drag/resize actual
         self.drag_offset_x = 0
         self.drag_offset_y = 0
 
-        # Callback cuando se mueve un elemento (app.py lo conecta)
+        # Ajuste a grilla (snap)
+        self.snap = True
+        self.grid = DOTS_PER_MM  # 1 mm
+
+        # Callbacks (app.py los conecta):
+        #   on_element_moved : tras mover/redimensionar/borrar (regenera código)
+        #   on_before_change : justo antes de una mutación (para apilar undo)
+        #   on_element_edit  : doble clic sobre un elemento (abrir su diálogo)
+        #   on_selection_changed : cambió el elemento seleccionado
         self.on_element_moved = None
+        self.on_before_change = None
+        self.on_element_edit = None
+        self.on_selection_changed = None
 
     def set_label_size(self, width_mm, height_mm):
         self.label_width_mm = width_mm
@@ -105,69 +122,243 @@ class LabelCanvas(Gtk.DrawingArea):
                 return elem
         return None
 
+    # ── Handles de redimensión ──
+
+    def _handle_at(self, sx, sy):
+        """Nombre del handle de esquina bajo (sx,sy) en pantalla, o None.
+
+        Se prueba en espacio de pantalla (los handles tienen tamaño fijo en px,
+        independiente del zoom).
+        """
+        if not self.selected_element:
+            return None
+        bx, by, bw, bh = self.selected_element.get_bounds()
+        corners = {
+            "nw": (bx, by), "ne": (bx + bw, by),
+            "sw": (bx, by + bh), "se": (bx + bw, by + bh),
+        }
+        for name, (cx, cy) in corners.items():
+            hx, hy = self.dots_to_screen(cx, cy)
+            if abs(sx - hx) <= HANDLE_PX and abs(sy - hy) <= HANDLE_PX:
+                return name
+        return None
+
+    # ── Helpers de mutación ──
+
+    def _notify_before_change(self):
+        if self.on_before_change:
+            self.on_before_change()
+
+    def _notify_changed(self):
+        if self.on_element_moved:
+            self.on_element_moved()
+
+    def _snap_val(self, v):
+        if not self.snap:
+            return int(v)
+        return int(round(v / self.grid) * self.grid)
+
+    def _translate(self, elem, dx, dy):
+        """Mueve un elemento preservando dimensiones (x2/y2 en BoxElement)."""
+        elem.x += dx
+        elem.y += dy
+        if hasattr(elem, "x2") and hasattr(elem, "y2"):
+            elem.x2 += dx
+            elem.y2 += dy
+
+    def _resize_selected(self, handle, dots_x, dots_y):
+        """Redimensiona el elemento seleccionado según el tipo y el handle."""
+        e = self.selected_element
+        dots_x = self._snap_val(dots_x)
+        dots_y = self._snap_val(dots_y)
+
+        if isinstance(e, BoxElement):
+            if "e" in handle:
+                e.x2 = max(e.x + 8, int(dots_x))
+            if "s" in handle:
+                e.y2 = max(e.y + 8, int(dots_y))
+            if "w" in handle:
+                e.x = min(e.x2 - 8, int(dots_x))
+            if "n" in handle:
+                e.y = min(e.y2 - 8, int(dots_y))
+        elif isinstance(e, LineElement):
+            e.width = max(2, int(dots_x - e.x))
+            e.height = max(1, int(dots_y - e.y))
+        elif isinstance(e, CircleElement):
+            e.diameter = max(8, int(max(dots_x - e.x, dots_y - e.y)))
+        elif isinstance(e, QRElement):
+            target = (dots_x - e.x) / max(1, e.module_count())
+            e.cell_size = min(e.CELL_SIZES, key=lambda s: abs(s - target))
+        elif isinstance(e, BarcodeElement):
+            new_h = int(dots_y - e.y)
+            if new_h >= 20:
+                e.height = new_h
+            geom = e.barcode_geometry()
+            total_modules = geom[1] if geom else max(1, len(e.data) * 11)
+            new_narrow = max(1, round((dots_x - e.x) / max(1, total_modules)))
+            e.narrow = new_narrow
+            e.wide = new_narrow
+        elif isinstance(e, TextElement):
+            base_h = e.FONTS.get(e.font, (16, 24))[1]
+            m = max(1, min(10, round((dots_y - e.y) / base_h)))
+            e.my = m
+            e.mx = m
+        elif isinstance(e, ImageElement):
+            if e.src_w > 0:
+                new_scale = (dots_x - e.x) / e.src_w
+                e.scale = max(0.05, min(8.0, round(new_scale, 3)))
+
+    def _update_cursor(self, sx, sy):
+        win = self.get_window()
+        if not win:
+            return
+        handle = self._handle_at(sx, sy)
+        name = {
+            "nw": "nwse-resize", "se": "nwse-resize",
+            "ne": "nesw-resize", "sw": "nesw-resize",
+        }.get(handle)
+        try:
+            cursor = Gdk.Cursor.new_from_name(self.get_display(), name) if name else None
+        except Exception:
+            cursor = None
+        win.set_cursor(cursor)
+
     # ── Eventos de mouse ──
 
     def _on_button_press(self, widget, event):
         if event.button != 1:
             return False
+        self.grab_focus()
+
+        # Doble clic: editar el elemento bajo el cursor
+        if event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS:
+            dx, dy = self.screen_to_dots(event.x, event.y)
+            elem = self.hit_test(dx, dy)
+            if elem and self.on_element_edit:
+                self.on_element_edit(elem)
+            return True
+
+        # ¿Agarró un handle de resize del elemento ya seleccionado?
+        handle = self._handle_at(event.x, event.y)
+        if handle and self.selected_element:
+            self.resizing = handle
+            self.dragging = False
+            self._mutated = False
+            return True
 
         dx, dy = self.screen_to_dots(event.x, event.y)
         elem = self.hit_test(dx, dy)
 
         # Deseleccionar anterior
-        if self.selected_element:
+        if self.selected_element and self.selected_element is not elem:
             self.selected_element.selected = False
 
+        changed_sel = elem is not self.selected_element
         self.selected_element = elem
         if elem:
             elem.selected = True
             self.dragging = True
+            self._mutated = False
             self.drag_offset_x = dx - elem.x
             self.drag_offset_y = dy - elem.y
         else:
             self.dragging = False
 
+        if changed_sel and self.on_selection_changed:
+            self.on_selection_changed(elem)
+
         self.queue_draw()
         return True
 
     def _on_motion_notify(self, widget, event):
-        if not self.dragging or not self.selected_element:
-            return False
+        # Redimensionando
+        if self.resizing and self.selected_element:
+            if not self._mutated:
+                self._notify_before_change()
+                self._mutated = True
+            dx, dy = self.screen_to_dots(event.x, event.y)
+            self._resize_selected(self.resizing, dx, dy)
+            self.queue_draw()
+            return True
 
-        dx, dy = self.screen_to_dots(event.x, event.y)
-        new_x = int(dx - self.drag_offset_x)
-        new_y = int(dy - self.drag_offset_y)
+        # Moviendo
+        if self.dragging and self.selected_element:
+            if not self._mutated:
+                self._notify_before_change()
+                self._mutated = True
+            dx, dy = self.screen_to_dots(event.x, event.y)
+            new_x = int(dx - self.drag_offset_x)
+            new_y = int(dy - self.drag_offset_y)
 
-        # Clamp a los límites de la etiqueta
-        label_w = self.label_width_mm * DOTS_PER_MM
-        label_h = self.label_height_mm * DOTS_PER_MM
-        new_x = max(0, min(new_x, label_w - 10))
-        new_y = max(0, min(new_y, label_h - 10))
+            label_w = self.label_width_mm * DOTS_PER_MM
+            label_h = self.label_height_mm * DOTS_PER_MM
+            new_x = max(0, min(new_x, label_w - 10))
+            new_y = max(0, min(new_y, label_h - 10))
+            if self.snap:
+                new_x = self._snap_val(new_x)
+                new_y = self._snap_val(new_y)
 
-        elem = self.selected_element
-        delta_x = new_x - elem.x
-        delta_y = new_y - elem.y
+            elem = self.selected_element
+            self._translate(elem, new_x - elem.x, new_y - elem.y)
+            self.queue_draw()
+            return True
 
-        # BoxElement: mover x2/y2 junto con x/y
-        if hasattr(elem, 'x2') and hasattr(elem, 'y2'):
-            elem.x2 += delta_x
-            elem.y2 += delta_y
-
-        elem.x = new_x
-        elem.y = new_y
-
-        self.queue_draw()
-        return True
+        # Hover: cursor de resize sobre un handle
+        self._update_cursor(event.x, event.y)
+        return False
 
     def _on_button_release(self, widget, event):
         if event.button != 1:
             return False
 
-        if self.dragging and self.on_element_moved:
-            self.on_element_moved()
-
+        was_active = self.dragging or self.resizing
         self.dragging = False
+        self.resizing = None
+        if was_active and self._mutated:
+            self._mutated = False
+            self._notify_changed()
         return True
+
+    # ── Teclado: borrar, mover con flechas ──
+
+    def _on_key_press(self, widget, event):
+        if not self.selected_element:
+            return False
+        kv = event.keyval
+
+        # Borrar elemento
+        if kv in (Gdk.KEY_Delete, Gdk.KEY_BackSpace):
+            self._notify_before_change()
+            if self.selected_element in self.elements:
+                self.elements.remove(self.selected_element)
+            self.selected_element = None
+            if self.on_selection_changed:
+                self.on_selection_changed(None)
+            self.queue_draw()
+            self._notify_changed()
+            return True
+
+        # Mover con flechas (Shift = paso fino de 1 dot)
+        fine = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
+        step = 1 if fine else DOTS_PER_MM
+        moves = {
+            Gdk.KEY_Left: (-step, 0), Gdk.KEY_Right: (step, 0),
+            Gdk.KEY_Up: (0, -step), Gdk.KEY_Down: (0, step),
+        }
+        if kv in moves:
+            self._notify_before_change()
+            ddx, ddy = moves[kv]
+            elem = self.selected_element
+            label_w = self.label_width_mm * DOTS_PER_MM
+            label_h = self.label_height_mm * DOTS_PER_MM
+            new_x = max(0, min(elem.x + ddx, label_w - 10))
+            new_y = max(0, min(elem.y + ddy, label_h - 10))
+            self._translate(elem, new_x - elem.x, new_y - elem.y)
+            self.queue_draw()
+            self._notify_changed()
+            return True
+
+        return False
 
     # ── Dibujo ──
 
@@ -321,6 +512,8 @@ class LabelCanvas(Gtk.DrawingArea):
             self._draw_box(cr, elem)
         elif isinstance(elem, CircleElement):
             self._draw_circle(cr, elem)
+        elif isinstance(elem, ImageElement):
+            self._draw_image(cr, elem)
 
     def _draw_text(self, cr, elem):
         if not elem.text:
@@ -350,9 +543,33 @@ class LabelCanvas(Gtk.DrawingArea):
         cr.restore()
 
     def _draw_barcode(self, cr, elem):
+        """Dibuja el código de barras REAL si la librería está disponible."""
         if not elem.data:
             return
 
+        geom = elem.barcode_geometry()
+        if not geom:
+            return self._draw_barcode_fallback(cr, elem)
+
+        runs, total_modules = geom
+        scale = max(1, elem.narrow)  # 1 módulo = narrow dots
+        cr.set_source_rgb(0, 0, 0)
+        for start, width in runs:
+            cr.rectangle(elem.x + start * scale, elem.y, width * scale, elem.height)
+        cr.fill()
+
+        if elem.human_readable:
+            cr.set_font_size(12)
+            cr.select_font_face("Monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+            total_w = total_modules * scale
+            te = cr.text_extents(elem.data)
+            text_x = elem.x + (total_w - te.width) / 2
+            cr.move_to(max(elem.x, text_x), elem.y + elem.height + 14)
+            cr.show_text(elem.data)
+
+    def _draw_barcode_fallback(self, cr, elem):
+        """Render aproximado (hash) cuando python-barcode no está disponible
+        o el tipo/dato no es soportado por el encoder."""
         x, y = elem.x, elem.y
         height = elem.height
 
@@ -382,9 +599,24 @@ class LabelCanvas(Gtk.DrawingArea):
             cr.show_text(elem.data)
 
     def _draw_qr(self, cr, elem):
+        """Dibuja el QR REAL (escaneable) si la librería está disponible."""
         if not elem.data:
             return
 
+        matrix = elem.qr_matrix()
+        if not matrix:
+            return self._draw_qr_fallback(cr, elem)
+
+        cell = elem.cell_size
+        cr.set_source_rgb(0, 0, 0)
+        for r, row in enumerate(matrix):
+            for c, on in enumerate(row):
+                if on:
+                    cr.rectangle(elem.x + c * cell, elem.y + r * cell, cell, cell)
+        cr.fill()
+
+    def _draw_qr_fallback(self, cr, elem):
+        """Render aproximado (hash) cuando `qrcode` no está disponible."""
         cell = elem.cell_size
         modules = 21
 
@@ -442,3 +674,22 @@ class LabelCanvas(Gtk.DrawingArea):
         cy = elem.y + radius
         cr.arc(cx, cy, radius, 0, 2 * math.pi)
         cr.stroke()
+
+    def _draw_image(self, cr, elem):
+        """Dibuja la imagen 1-bit (dithered) como máscara negra (WYSIWYG)."""
+        m = elem.mono()
+        if not m:
+            # Placeholder si no se pudo cargar la imagen
+            cr.set_source_rgba(0.7, 0.7, 0.7, 0.6)
+            w = int(elem.src_w * elem.scale) or 80
+            h = int(elem.src_h * elem.scale) or 80
+            cr.rectangle(elem.x, elem.y, w, h)
+            cr.stroke()
+            return
+        surface = cairo.ImageSurface.create_for_data(
+            bytearray(m["a8"]), cairo.FORMAT_A8, m["w"], m["h"], m["stride"]
+        )
+        cr.save()
+        cr.set_source_rgb(0, 0, 0)
+        cr.mask_surface(surface, elem.x, elem.y)
+        cr.restore()

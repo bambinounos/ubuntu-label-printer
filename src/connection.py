@@ -12,6 +12,20 @@ import threading
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "label-printer")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "connection.json")
 
+
+def _to_bytes(content):
+    """Normaliza el contenido a bytes terminados en salto de línea.
+
+    Acepta str (TSPL/ZPL de texto) o bytes (payload con BITMAP binario).
+    """
+    if isinstance(content, (bytes, bytearray)):
+        data = bytes(content)
+    else:
+        data = content.encode("utf-8")
+    if not data.endswith(b"\n"):
+        data += b"\n"
+    return data
+
 DEFAULT_CONFIG = {
     "mode": "cups",         # "cups", "network", "usb"
     "cups_printer": "HT300-TSPL",
@@ -68,10 +82,8 @@ def _send_cups(tspl_content, config):
     import tempfile
     printer = config.get("cups_printer", "HT300")
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.tspl', delete=False) as f:
-        f.write(tspl_content)
-        if not tspl_content.endswith('\n'):
-            f.write('\n')
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.tspl', delete=False) as f:
+        f.write(_to_bytes(tspl_content))
         tmpfile = f.name
 
     try:
@@ -108,10 +120,7 @@ def _send_network(tspl_content, config):
         sock.settimeout(10)
         sock.connect((ip, port))
 
-        data = tspl_content
-        if not data.endswith('\n'):
-            data += '\n'
-        sock.sendall(data.encode('utf-8'))
+        sock.sendall(_to_bytes(tspl_content))
         sock.close()
 
         return True, f"Enviado a {ip}:{port}"
@@ -131,11 +140,8 @@ def _send_usb(tspl_content, config):
         return False, f"Dispositivo {device} no encontrado. Verificar conexión USB."
 
     try:
-        data = tspl_content
-        if not data.endswith('\n'):
-            data += '\n'
         with open(device, 'wb') as f:
-            f.write(data.encode('utf-8'))
+            f.write(_to_bytes(tspl_content))
         return True, f"Enviado a {device}"
     except PermissionError:
         return False, f"Sin permisos para {device}. Ejecutar: sudo chmod 666 {device}"

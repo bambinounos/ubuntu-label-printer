@@ -47,6 +47,41 @@ class TSPLGenerator:
 
         return "\n".join(lines)
 
+    def generate_bytes(self, elements, copies=1):
+        """Genera el payload TSPL como bytes (necesario para BITMAP binario).
+
+        Idéntico a generate() pero usa element.to_tspl_bytes() para soportar
+        datos binarios (imágenes). Usar al imprimir diseños con imágenes; el
+        TextView no puede contener binario.
+        """
+        out = bytearray()
+
+        def add(s):
+            out.extend(s.encode("utf-8", errors="replace"))
+            out.extend(b"\n")
+
+        add(f"SIZE {self.width_mm} mm,{self.height_mm} mm")
+        add(f"GAP {self.gap_mm} mm,0 mm")
+        add(f"DIRECTION {self.direction},0")
+        add("REFERENCE 0,0")
+        add("OFFSET 0 mm")
+        add("SET PEEL OFF")
+        add("SET TEAR ON")
+        if self.speed is not None:
+            add(f"SPEED {self.speed}")
+        if self.density is not None:
+            add(f"DENSITY {self.density}")
+        add("CLS")
+
+        for element in elements:
+            chunk = element.to_tspl_bytes()
+            if chunk:
+                out.extend(chunk)
+                out.extend(b"\n")
+
+        add(f"PRINT {copies}")
+        return bytes(out)
+
     def parse_tspl(self, tspl_code):
         """Parsea código TSPL y extrae configuración y elementos."""
         from src.label_elements import (
