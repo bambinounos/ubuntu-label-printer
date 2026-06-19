@@ -13,15 +13,21 @@ Funciona con impresoras HPRT, TSC, Xprinter, Gainscha, iDPRT y cualquier modelo 
 
 ## Características
 
-- **Editor visual** con vista previa en tiempo real (Cairo)
-- **Editor TSPL** con sincronización bidireccional (Visual ↔ TSPL)
+- **Editor visual WYSIWYG** con vista previa en tiempo real (Cairo): los códigos de barras y QR se renderizan **reales y escaneables** (no aproximados)
+- **Manipulación directa**: arrastrar para mover, handles de esquina para redimensionar, doble clic para editar, tecla Supr para borrar, flechas para mover, ajuste a grilla y **deshacer/rehacer** (Ctrl+Z / Ctrl+Shift+Z)
+- **Editor TSPL/ZPL** con sincronización bidireccional (Visual ↔ código)
+- **Guardar/Cargar diseños** en archivos `.label` y **crear plantillas personalizadas** (además de las 12 incluidas)
+- **Imagen / Logo**: inserta un PNG/JPG monocromo (con dither y umbral ajustables) → TSPL `BITMAP` / ZPL `^GFA`
+- **Datos variables / impresión por lotes** desde CSV con placeholders `{{columna}}` (mail-merge)
 - **12 plantillas** reales: Caterpillar, Komatsu, Hino, Hyundai, envío, bodega, QR
-- **Códigos de barras**: Code 128, 128M, 39, 39C, EAN-13, UPC-A
+- **Códigos de barras**: Code 128, 128M, 39, 39C, EAN-13, EAN-8, UPC-A, UPC-E
 - **Códigos QR** con niveles de corrección configurables
-- **Elementos gráficos**: texto, líneas, cajas, círculos
+- **Elementos gráficos**: texto, líneas, cajas, círculos, imágenes
 - **3 modos de conexión**: CUPS, Red TCP (socket:9100), USB directo
 - **Interfaz web** alternativa (puerto 5080)
 - **Instalador profesional** con integración al menú de Ubuntu y GNOME Software
+
+> Los renders reales requieren `qrcode` y `python-barcode` (se instalan con `pip install -r requirements.txt`). Si faltan, el preview cae a un render aproximado sin afectar la impresión.
 
 ---
 
@@ -40,7 +46,7 @@ Esta aplicación funciona con **cualquier impresora térmica que soporte el leng
 
 > **Nota:** Si tu impresora soporta múltiples lenguajes (TSPL, EPL, ZPL, CPCL), asegúrate de configurarla en **modo TSPL** antes de usar esta aplicación.
 
-> **Soporte ZPL (Zebra):** Está planificado agregar soporte para el lenguaje ZPL (Zebra Programming Language) en una versión futura.
+> **Soporte ZPL (Zebra):** Disponible. Selecciona **ZPL** en el desplegable de lenguaje del editor para generar e imprimir en Zebra Programming Language (incluye imágenes vía `^GFA`).
 
 ---
 
@@ -141,9 +147,34 @@ La ventana tiene 3 paneles:
 | + Texto | Texto, posición X/Y, fuente, multiplicador | Fuentes: "1" a "5", "TSS24.BF2" |
 | + Barcode | Datos, tipo, posición, altura, legible | Tipos: 128, 128M, 39, 39C, EAN13 |
 | + QR | Datos, posición, tamaño celda, corrección | Celdas: 1,3,5,7,10,12 |
+| + Imagen / Logo | Archivo PNG/JPG, escala, umbral, dither, invertir | Se convierte a `BITMAP` 1-bit |
 | + Línea | Agrega barra horizontal | BAR x,y,ancho,alto |
 | + Caja | Agrega rectángulo | BOX x1,y1,x2,y2,grosor |
 | + Círculo | Agrega círculo | CIRCLE x,y,diámetro,grosor |
+
+#### Edición directa en el canvas
+
+| Acción | Cómo |
+|--------|------|
+| Seleccionar / mover | Click y arrastrar |
+| Redimensionar | Arrastrar un handle de esquina |
+| Editar propiedades | Doble clic sobre el elemento |
+| Borrar | Tecla `Supr` |
+| Mover preciso | Flechas (Shift = 1 dot) |
+| Deshacer / Rehacer | `Ctrl+Z` / `Ctrl+Shift+Z` |
+| Ajustar a grilla | Casilla "Ajustar a grilla" |
+
+#### Guardar diseños y plantillas
+
+- **Guardar/Abrir diseño** (`.label`) con los botones de la barra superior.
+- **★ Guardar como plantilla**: guarda el diseño actual como plantilla reutilizable (aparece en el panel izquierdo, se puede borrar con el icono de papelera).
+
+#### Impresión por lotes (datos variables)
+
+1. En un texto o código, escribe placeholders como `{{sku}}`, `{{nombre}}`.
+2. Click **"Datos / CSV…"** junto a Imprimir.
+3. Selecciona un CSV (la primera fila son los nombres de columna).
+4. Usa **"Vista previa fila N"** para revisar y luego **"Imprimir todas"**.
 
 #### Configurar conexión (icono engranaje ⚙)
 
@@ -322,10 +353,15 @@ ubuntu-label-printer/
 ├── src/
 │   ├── main.py             # Punto de entrada
 │   ├── app.py              # Ventana GTK principal + diálogos
-│   ├── connection.py       # Gestión de conexión (CUPS/Red/USB)
-│   ├── label_canvas.py     # Vista previa Cairo
-│   ├── label_elements.py   # Elementos TSPL (Text, Barcode, QR, etc.)
-│   ├── tspl_generator.py   # Generador y parser TSPL
+│   ├── connection.py       # Gestión de conexión (CUPS/Red/USB, acepta bytes)
+│   ├── label_canvas.py     # Vista previa Cairo + edición directa (drag/resize/teclado)
+│   ├── label_elements.py   # Elementos (Text, Barcode, QR, Imagen, etc.) + to_dict/to_zpl
+│   ├── render_codes.py     # Render REAL de barcode/QR (qrcode + python-barcode)
+│   ├── image_ops.py        # Conversión de imágenes a bitmap 1-bit (BITMAP/^GFA)
+│   ├── project.py          # Guardar/cargar diseños .label + plantillas de usuario
+│   ├── mailmerge.py        # Datos variables / lotes CSV (placeholders {{col}})
+│   ├── tspl_generator.py   # Generador y parser TSPL (+ generate_bytes para binario)
+│   ├── zpl_generator.py    # Generador y parser ZPL (Zebra)
 │   ├── printer.py          # Impresión via CUPS (legacy)
 │   └── templates.py        # Plantillas predefinidas
 ├── requirements.txt

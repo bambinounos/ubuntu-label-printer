@@ -39,7 +39,16 @@ sudo apt-get install -y -qq \
     python3-gi-cairo \
     gir1.2-gtk-3.0 \
     cups \
+    python3-qrcode \
+    python3-pil \
     > /dev/null
+# python-barcode no está en apt: instalarlo con pip (entorno gestionado PEP 668).
+# Es opcional: si falla, la vista previa de códigos cae a un render aproximado.
+if ! python3 -c "import barcode" 2>/dev/null; then
+    pip install --break-system-packages -q "python-barcode>=0.15" 2>/dev/null \
+        || pip install --user --break-system-packages -q "python-barcode>=0.15" 2>/dev/null \
+        || echo "  ⚠ python-barcode no se pudo instalar (vista previa de barras aproximada)"
+fi
 echo "  ✓ Dependencias instaladas"
 
 # ── 2. Copiar aplicación a /opt ──

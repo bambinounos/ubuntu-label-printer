@@ -1,2 +1,8 @@
 PyGObject>=3.42.0
 pycairo>=1.20.0
+# Render real de códigos (vista previa WYSIWYG). Puro-Python, opcionales:
+# si faltan, el canvas cae a un render aproximado sin romperse.
+qrcode>=7.4
+python-barcode>=0.15
+# Conversión de imágenes a bitmap 1-bit (elemento imagen/logo)
+Pillow>=9.0
